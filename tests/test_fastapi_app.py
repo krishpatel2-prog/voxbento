@@ -1434,6 +1434,47 @@ def test_event_booth_whip_url_standby_rejected():
             assert res.status_code == 403
 
 
+def test_api_cross_event_idor_rejected():
+    """An event-scoped JWT for Event A must not be able to delete a booth in Event B."""
+    import os
+
+    from portal.auth import create_participant_token
+    from portal.config import settings
+
+    # 1. Create Event B and its booth (while auth is disabled)
+    res_b = client.post(
+        "/api/events/event-b-idor/booths", json={"language_code": "fr", "room_id": 1, "language": "French"}
+    )
+    assert res_b.status_code == 201
+
+    # 2. Generate an interpreter token scoped to Event A
+    token_a = create_participant_token(
+        booth_id=999, role="interpreter", event_slug="event-a-idor", room_id=999, language_code="en"
+    )
+
+    # Enable auth so _require_access actually validates the token
+    os.environ["BOOTH_ACCESS_TOKEN"] = "test-booth-token"
+    settings.booth_access_token = "test-booth-token"
+
+    try:
+        # 3. Attempt to delete Event B's booth using Event A's token
+        delete_res = client.delete(
+            "/api/events/event-b-idor/rooms/1/booths/fr", headers={"Authorization": f"Bearer {token_a}"}
+        )
+
+        # 4. Assert that the request is rejected
+        assert delete_res.status_code == 403
+    finally:
+        os.environ["BOOTH_ACCESS_TOKEN"] = ""
+        settings.booth_access_token = ""
+
+    # Verify if the booth was actually deleted
+    list_res = client.get("/api/events/event-b-idor/booths")
+    assert list_res.status_code == 200
+    booths = list_res.json().get("booths", [])
+    assert any(b["language_code"] == "fr" for b in booths), "Booth was permanently deleted by the IDOR!"
+
+
 def test_cross_event_listing_isolation():
     """Booths created under event A must not appear in event B listing."""
     client.post("/api/events/isolatea/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
